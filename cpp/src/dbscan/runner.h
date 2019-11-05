@@ -49,6 +49,12 @@ __global__ void relabelForSkl(Index_* labels, Index_ N, Index_ MAX_LABEL) {
     --labels[tid];
 }
 
+template <typename Index_ = int>
+__global__ void bitwiseAnd(bool* core_pts, bool* core_candidates, Index_ N) {
+  Index_ tid = threadIdx.x + blockDim.x * blockIdx.x;
+  if (tid < N) core_pts[tid] &= core_candidates[tid];
+}
+
 /**
  * Turn the non-monotonic labels from weak_cc primitive into
  * an array of labels drawn from a monotonically increasing set.
@@ -77,7 +83,7 @@ template <typename Type, typename Type_f, typename Index_ = int>
 size_t run(const ML::cumlHandle_impl& handle, Type_f* x, Index_ N, Index_ D,
            Type_f eps, Type minPts, Index_* labels, int algoVd, int algoAdj,
            int algoCcl, void* workspace, Index_ nBatches, cudaStream_t stream,
-           bool verbose = false) {
+           bool verbose = false, bool* core_candidates = NULL) {
   const size_t align = 256;
   size_t batchSize = ceildiv<size_t>(N, nBatches);
 
@@ -113,6 +119,7 @@ size_t run(const ML::cumlHandle_impl& handle, Type_f* x, Index_ N, Index_ D,
       adjSize + corePtsSize + 2 * xaSize + mSize + vdSize + exScanSize;
     return size;
   }
+  size_t nblks = ceildiv<size_t>(N, TPB);
 
   // partition the temporary workspace needed for different stages of dbscan.
 
@@ -179,6 +186,21 @@ size_t run(const ML::cumlHandle_impl& handle, Type_f* x, Index_ N, Index_ D,
                                 ex_scan, N, minPts, core_pts, algoAdj, nPoints,
                                 stream);
 
+    // TODO: This is actually not the way I originally implemented the size
+    // filter. Originally, the size filter already had impact on the adjacency
+    // matrix adj. If a point does not qualify as a core_candidate, it would
+    // not even be considered by the VertexDeg. So only core_candidates
+    // contribute to the adjacency matrix.
+    // It should also be possible to implemented that way, however
+    // it might require to build two separate adjacency matricies using
+    // VertexDeg.
+    if (core_candidates != NULL) {
+      bitwiseAnd<Index_>
+        <<<nblks, TPB, 0, stream>>>(core_pts, core_candidates, N);
+    }
+    //cudaMemset(core_pts, 0, corePtsSize); // results in only noise points
+    //cudaMemset(core_pts, 1, corePtsSize); // results in no noise points
+
     ML::POP_RANGE();
 
     ML::PUSH_RANGE("Trace::Dbscan::WeakCC");
@@ -207,7 +229,6 @@ size_t run(const ML::cumlHandle_impl& handle, Type_f* x, Index_ N, Index_ D,
 
   ML::PUSH_RANGE("Trace::Dbscan::FinalRelabel");
   if (algoCcl == 2) final_relabel(labels, N, stream);
-  size_t nblks = ceildiv<size_t>(N, TPB);
   relabelForSkl<Index_><<<nblks, TPB, 0, stream>>>(labels, N, MAX_LABEL);
   CUDA_CHECK(cudaPeekAtLastError());
   ML::POP_RANGE();

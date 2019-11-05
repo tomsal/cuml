@@ -60,7 +60,7 @@ template <typename T, typename Index_ = int>
 void dbscanFitImpl(const ML::cumlHandle_impl &handle, T *input, Index_ n_rows,
                    Index_ n_cols, T eps, int min_pts, Index_ *labels,
                    size_t max_mbytes_per_batch, cudaStream_t stream,
-                   bool verbose) {
+                   bool verbose, bool *core_candidates = NULL) {
   ML::PUSH_RANGE("ML::Dbscan::Fit");
   int algoVd = 1;
   int algoAdj = 1;
@@ -74,7 +74,11 @@ void dbscanFitImpl(const ML::cumlHandle_impl &handle, T *input, Index_ n_rows,
     if (n_batches > 1) {
       std::cout << "Running batched training on " << n_batches
                 << " batches w/ ";
-      std::cout << batchSize * n_rows * sizeof(T) * 1e-6 << " megabytes." << std::endl;
+      std::cout << batchSize * n_rows * sizeof(T) * 1e-6 << " megabytes."
+                << std::endl;
+      // In order to hack in our size filter for core points, we want to assume
+      // to process the data in a single batch.
+      throw;
     }
   }
 
@@ -85,7 +89,8 @@ void dbscanFitImpl(const ML::cumlHandle_impl &handle, T *input, Index_ n_rows,
   MLCommon::device_buffer<char> workspace(handle.getDeviceAllocator(), stream,
                                           workspaceSize);
   Dbscan::run(handle, input, n_rows, n_cols, eps, min_pts, labels, algoVd,
-              algoAdj, algoCcl, workspace.data(), n_batches, stream, verbose);
+              algoAdj, algoCcl, workspace.data(), n_batches, stream, verbose,
+              core_candidates);
   ML::POP_RANGE();
 }
 
